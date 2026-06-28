@@ -337,7 +337,7 @@
   <div id="main"></div>
 
   <div class="footer-note">
-    Data se ukládají přímo v tomto telefonu.<br>
+    Úkoly se sdílejí mezi všemi telefony v rodině.<br>
     Appku přidáš na plochu přes „Sdílet → Přidat na plochu“.
   </div>
 </div>
@@ -346,6 +346,7 @@
 <datalist id="storeList"></datalist>
 <datalist id="catList"></datalist>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
 const STORAGE_KEY = 'mysi-ukolarna-v1';
 const ME_KEY = 'mysi-ukolarna-me';
@@ -354,8 +355,11 @@ const ADULTS = ['An', 'Marek'];
 const DEFAULT_STORES = ['DM', 'Albert', 'Hotovky.cz'];
 const DEFAULT_CATS   = ['Dovolená', 'Tábor', 'Domácnost'];
 
-let state = load();
-save();
+const SUPABASE_URL = 'https://wjgdbcbthbfcwokohwxm.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_AFQX4GNMBYU_tRvJO1FD8A_dFMJanbX';
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+let state = { tasks: [] };
 let me = localStorage.getItem(ME_KEY) || '';
 let view = 'prehled';
 let filterCat = 'vse';
@@ -363,24 +367,40 @@ let filterStore = 'vse';
 let filterPerson = 'vse';
 let formOpen = false;
 let editId = null;
+let loadError = '';
 
-function load() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const data = JSON.parse(raw);
-      // Převod starých jmen na nová
-      const map = { 'manžel': 'Marek', 'já': 'An' };
-      (data.tasks || []).forEach(t => { if (t.person && map[t.person]) t.person = map[t.person]; });
-      // Seznam osob: pouze požadovaných 5
-      data.people = [...DEFAULT_PEOPLE];
-      return data;
-    }
-  } catch (e) {}
-  return { tasks: [], people: [...DEFAULT_PEOPLE], stores: [...DEFAULT_STORES], cats: [...DEFAULT_CATS] };
+async function reload() {
+  const { data, error } = await sb.from('tasks').select('*');
+  if (error) { loadError = error.message; render(); return; }
+  loadError = '';
+  state.tasks = data || [];
+  render();
 }
-function save() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+
+// Jednorázový převod úkolů z telefonu do cloudu (při prvním spuštění sdílené verze)
+async function migrateLocalIfNeeded() {
+  if (localStorage.getItem('mysi-migrated')) return;
+  let local = [];
+  try { local = (JSON.parse(localStorage.getItem(STORAGE_KEY)) || {}).tasks || []; } catch (e) {}
+  if (!local.length) { localStorage.setItem('mysi-migrated', '1'); return; }
+  const { data } = await sb.from('tasks').select('id').limit(1);
+  if (data && data.length) { localStorage.setItem('mysi-migrated', '1'); return; }
+  const map = { 'manžel': 'Marek', 'já': 'An' };
+  const rows = local.map(t => ({
+    id: t.id || uid(),
+    title: t.title || '',
+    cat: t.cat || '',
+    date: t.date || '',
+    person: map[t.person] || t.person || '',
+    store: t.store || '',
+    important: !!t.important,
+    secret: !!t.secret,
+    owner: t.owner || '',
+    done: !!t.done,
+    created: t.created || Date.now()
+  }));
+  await sb.from('tasks').insert(rows);
+  localStorage.setItem('mysi-migrated', '1');
 }
 
 function todayStr() {
@@ -415,11 +435,7 @@ function usedExtras(field, base) {
 function allCats() { return [...DEFAULT_CATS, ...usedExtras('cat', DEFAULT_CATS)]; }
 function allStores() { return [...DEFAULT_STORES, ...usedExtras('store', DEFAULT_STORES)]; }
 
-function refreshDatalists() {
-  document.getElementById('peopleList').innerHTML = state.people.map(p => `<option value="${esc(p)}">`).join('');
-  document.getElementById('storeList').innerHTML = state.stores.map(p => `<option value="${esc(p)}">`).join('');
-  document.getElementById('catList').innerHTML = state.cats.map(p => `<option value="${esc(p)}">`).join('');
-}
+function refreshDatalists() {}
 
 /* ---------- Formulář ---------- */
 function renderForm() {
@@ -515,7 +531,7 @@ function renderForm() {
   document.getElementById('fTitle').focus();
 }
 
-function saveTask() {
+async function saveTask() {
   const title = document.getElementById('fTitle').value.trim();
   if (!title) { document.getElementById('fTitle').focus(); return; }
   let cat = document.getElementById('fCat').value;
@@ -528,39 +544,49 @@ function saveTask() {
   const important = document.getElementById('fImp').checked;
   const secret = document.getElementById('fSecret').checked;
 
-  if (person && !state.people.includes(person)) state.people.push(person);
-  if (store && !state.stores.includes(store)) state.stores.push(store);
-  if (cat && !state.cats.includes(cat)) state.cats.push(cat);
+  const saveBtn = document.getElementById('fSave');
+  saveBtn.disabled = true; saveBtn.textContent = 'Ukládám…';
 
+  let error;
   if (editId) {
     const t = state.tasks.find(x => x.id === editId);
-    if (t) {
-      t.title = title; t.cat = cat; t.date = date; t.person = person; t.store = store; t.important = important;
-      t.secret = secret;
-      t.owner = secret ? (t.owner || me) : '';
-    }
+    const patch = { title, cat, date, person, store, important, secret, owner: secret ? ((t && t.owner) || me) : '' };
+    ({ error } = await sb.from('tasks').update(patch).eq('id', editId));
   } else {
-    state.tasks.push({ id: uid(), title, cat, date, person, store, important, secret, owner: secret ? me : '', done: false, created: Date.now() });
+    const row = { id: uid(), title, cat, date, person, store, important, secret, owner: secret ? me : '', done: false, created: Date.now() };
+    ({ error } = await sb.from('tasks').insert(row));
   }
-  save();
+  if (error) {
+    alert('Nepodařilo se uložit: ' + error.message);
+    saveBtn.disabled = false;
+    saveBtn.textContent = editId ? 'Uložit změny' : 'Přidat úkol';
+    return;
+  }
+
   formOpen = false;
   editId = null;
   renderForm();
-  render();
+  await reload();
 }
 
-function toggleDone(id) {
+async function toggleDone(id) {
   const t = state.tasks.find(x => x.id === id);
-  if (t) { t.done = !t.done; save(); render(); }
+  if (!t) return;
+  const { error } = await sb.from('tasks').update({ done: !t.done }).eq('id', id);
+  if (error) { alert('Nepodařilo se uložit: ' + error.message); return; }
+  await reload();
 }
-function toggleImportant(id) {
+async function toggleImportant(id) {
   const t = state.tasks.find(x => x.id === id);
-  if (t) { t.important = !t.important; save(); render(); }
+  if (!t) return;
+  const { error } = await sb.from('tasks').update({ important: !t.important }).eq('id', id);
+  if (error) { alert('Nepodařilo se uložit: ' + error.message); return; }
+  await reload();
 }
-function delTask(id) {
-  state.tasks = state.tasks.filter(x => x.id !== id);
-  save();
-  render();
+async function delTask(id) {
+  const { error } = await sb.from('tasks').delete().eq('id', id);
+  if (error) { alert('Nepodařilo se smazat: ' + error.message); return; }
+  await reload();
 }
 
 /* ---------- Vykreslení úkolu ---------- */
@@ -686,6 +712,8 @@ function render() {
   else if (view === 'osoba') main.innerHTML = renderOsoba();
   else main.innerHTML = renderObchod();
 
+  if (loadError) main.innerHTML = `<div class="empty"><div class="mouse">⚠️</div><p>Nepodařilo se spojit s cloudem.<br>${esc(loadError)}</p></div>` + main.innerHTML;
+
   main.querySelectorAll('[data-done]').forEach(el =>
     el.addEventListener('click', () => toggleDone(el.dataset.done)));
   main.querySelectorAll('[data-imp]').forEach(el =>
@@ -754,9 +782,16 @@ document.getElementById('addBtn').addEventListener('click', () => {
   renderForm();
 });
 
-refreshDatalists();
-if (me) { view = 'osoba'; filterPerson = me; }
-render();
+async function init() {
+  render();
+  await migrateLocalIfNeeded();
+  if (me) { view = 'osoba'; filterPerson = me; }
+  await reload();
+  sb.channel('tasks-changes')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, () => reload())
+    .subscribe();
+}
+init();
 </script>
 </body>
 </html>
