@@ -437,6 +437,18 @@ function allStores() { return [...DEFAULT_STORES, ...usedExtras('store', DEFAULT
 
 function refreshDatalists() {}
 
+// Odznak na ikoně appky: počet mých nehotových úkolů (jako červené číslo u WhatsAppu)
+function myOpenCount() {
+  if (!me) return 0;
+  return state.tasks.filter(t => t.person === me && !t.done && canSee(t)).length;
+}
+function updateBadge() {
+  const n = myOpenCount();
+  if (!('setAppBadge' in navigator)) return; // starší telefony odznak neumí – appka funguje dál
+  if (n > 0) navigator.setAppBadge(n).catch(() => {});
+  else navigator.clearAppBadge().catch(() => {});
+}
+
 /* ---------- Formulář ---------- */
 function renderForm() {
   const area = document.getElementById('formArea');
@@ -728,6 +740,7 @@ function render() {
     el.addEventListener('click', () => { filterStore = el.dataset.store; render(); }));
   main.querySelectorAll('[data-person]').forEach(el =>
     el.addEventListener('click', () => { filterPerson = el.dataset.person; render(); }));
+  updateBadge();
 }
 
 /* ---------- Kdo jsem ---------- */
