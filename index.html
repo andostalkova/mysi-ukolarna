@@ -164,6 +164,30 @@
     margin-bottom: 1rem;
     flex-wrap: wrap;
   }
+
+  .date-filter {
+    display: grid;
+    grid-template-columns: 1fr 1fr auto;
+    gap: 8px;
+    margin-bottom: 1rem;
+    align-items: end;
+  }
+  .date-filter .field { gap: 4px; }
+  .date-filter .field label {
+    font-size: 11px;
+    letter-spacing: .35px;
+  }
+  .date-filter .btn-ghost {
+    min-height: 44px;
+    padding: 10px 12px;
+  }
+
+  @media (max-width: 560px) {
+    .date-filter {
+      grid-template-columns: 1fr;
+    }
+  }
+
   .chip {
     padding: 6px 14px;
     border-radius: var(--radius-pill);
@@ -334,6 +358,7 @@
   <button class="add-btn" id="addBtn">+ Nový úkol</button>
 
   <div id="formArea"></div>
+  <div id="dateFilterArea"></div>
   <div id="main"></div>
 
   <div class="footer-note">
@@ -365,6 +390,8 @@ let view = 'prehled';
 let filterCat = 'vse';
 let filterStore = 'vse';
 let filterPerson = 'vse';
+let filterDateFrom = '';
+let filterDateTo = '';
 let formOpen = false;
 let editId = null;
 let loadError = '';
@@ -434,6 +461,16 @@ function usedExtras(field, base) {
 }
 function allCats() { return [...DEFAULT_CATS, ...usedExtras('cat', DEFAULT_CATS)]; }
 function allStores() { return [...DEFAULT_STORES, ...usedExtras('store', DEFAULT_STORES)]; }
+
+function applyDueDateFilter(tasks) {
+  if (!filterDateFrom && !filterDateTo) return tasks;
+  return tasks.filter(t => {
+    if (!t.date) return false;
+    if (filterDateFrom && t.date < filterDateFrom) return false;
+    if (filterDateTo && t.date > filterDateTo) return false;
+    return true;
+  });
+}
 
 function refreshDatalists() {}
 
@@ -634,9 +671,44 @@ function emptyHTML(text) {
   return `<div class="empty"><div class="mouse">🧀</div><p>${text}</p></div>`;
 }
 
+function renderDateFilter() {
+  const area = document.getElementById('dateFilterArea');
+  area.innerHTML = `
+    <div class="date-filter">
+      <div class="field">
+        <label for="filterDateFrom">Termín od</label>
+        <input type="date" id="filterDateFrom" value="${esc(filterDateFrom)}">
+      </div>
+      <div class="field">
+        <label for="filterDateTo">Termín do</label>
+        <input type="date" id="filterDateTo" value="${esc(filterDateTo)}">
+      </div>
+      <button class="btn btn-ghost" id="clearDateFilter" type="button">Zrušit filtr</button>
+    </div>
+  `;
+
+  const fromEl = document.getElementById('filterDateFrom');
+  const toEl = document.getElementById('filterDateTo');
+  const clearEl = document.getElementById('clearDateFilter');
+
+  fromEl.addEventListener('change', () => {
+    filterDateFrom = fromEl.value;
+    render();
+  });
+  toEl.addEventListener('change', () => {
+    filterDateTo = toEl.value;
+    render();
+  });
+  clearEl.addEventListener('click', () => {
+    filterDateFrom = '';
+    filterDateTo = '';
+    render();
+  });
+}
+
 /* ---------- Pohledy ---------- */
 function renderPrehled() {
-  const ts = visibleTasks();
+  const ts = applyDueDateFilter(visibleTasks());
   const active = ts.filter(t => !t.done);
   const done = ts.filter(t => t.done);
 
@@ -670,7 +742,7 @@ function renderKategorie() {
   const chips = cats.map(c =>
     `<button class="chip ${filterCat === c ? 'active' : ''}" data-cat="${esc(c)}">${c === 'vse' ? 'Vše' : esc(c)}</button>`
   ).join('');
-  let tasks = visibleTasks();
+  let tasks = applyDueDateFilter(visibleTasks());
   if (filterCat !== 'vse') tasks = tasks.filter(t => t.cat === filterCat);
   const active = tasks.filter(t => !t.done).sort(byDate);
   const done = tasks.filter(t => t.done);
@@ -686,7 +758,7 @@ function renderObchod() {
   const chips = stores.map(s =>
     `<button class="chip ${filterStore === s ? 'active' : ''}" data-store="${esc(s)}">${s === 'vse' ? 'Vše' : '🛒 ' + esc(s)}</button>`
   ).join('');
-  let tasks = visibleTasks().filter(t => t.store);
+  let tasks = applyDueDateFilter(visibleTasks()).filter(t => t.store);
   if (filterStore !== 'vse') tasks = tasks.filter(t => t.store === filterStore);
   const active = tasks.filter(t => !t.done).sort(byDate);
   const done = tasks.filter(t => t.done);
@@ -704,7 +776,7 @@ function renderOsoba() {
   const chips = people.map(p =>
     `<button class="chip ${filterPerson === p ? 'active' : ''}" data-person="${esc(p)}">${p === 'vse' ? 'Vše' : personIcon(p) + ' ' + esc(p)}</button>`
   ).join('');
-  let tasks = visibleTasks();
+  let tasks = applyDueDateFilter(visibleTasks());
   if (filterPerson !== 'vse') tasks = tasks.filter(t => t.person === filterPerson);
   const active = tasks.filter(t => !t.done).sort(byDate);
   const done = tasks.filter(t => t.done);
@@ -717,6 +789,7 @@ function renderOsoba() {
 
 function render() {
   renderMe();
+  renderDateFilter();
   document.querySelectorAll('.modeBtn').forEach(b => b.classList.toggle('active', b.dataset.view === view));
   const main = document.getElementById('main');
   if (view === 'prehled') main.innerHTML = renderPrehled();
