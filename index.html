@@ -339,6 +339,25 @@
   .me-pick { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
   .me-chip { font-size: 14px; padding: 8px 16px; }
   .task-lock { margin-right: 4px; }
+
+  .task-delegate {
+    background: none; border: none; cursor: pointer;
+    font-size: 15px; padding: 0 2px;
+    flex-shrink: 0; line-height: 1; margin-top: 3px; opacity: .65;
+    transition: opacity .15s;
+  }
+  .task-delegate:hover, .task-delegate.on { opacity: 1; }
+  .task.delegating { flex-wrap: wrap; }
+  .delegate-box {
+    flex: 0 0 100%;
+    margin-top: 2px; padding-top: 10px;
+    border-top: 1px dashed var(--border-strong);
+  }
+  .delegate-label { font-size: 12px; font-weight: 700; color: var(--text-muted); margin-bottom: 8px; }
+  .delegate-pick { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+  .delegate-actions { display: flex; gap: 8px; }
+  .delegate-actions .btn { padding: 7px 14px; font-size: 13px; }
+  .delegate-actions .btn:disabled { opacity: .45; cursor: default; }
 </style>
 </head>
 <body>
@@ -394,6 +413,8 @@ let filterDateFrom = '';
 let filterDateTo = '';
 let formOpen = false;
 let editId = null;
+let delegateId = null;   // úkol, u kterého je otevřený výběr, komu ho předat
+let delegateTo = '';
 let loadError = '';
 
 async function reload() {
@@ -638,6 +659,32 @@ async function delTask(id) {
   await reload();
 }
 
+// Delegovat jde jen vlastní, nehotový a netajný úkol (tajné úkoly nikdo jiný vidět nemá)
+function canDelegate(t) { return !!me && t.person === me && !t.done && !t.secret; }
+async function delegateTask() {
+  const t = state.tasks.find(x => x.id === delegateId);
+  if (!t || !delegateTo || !canDelegate(t)) return;
+  const { error } = await sb.from('tasks').update({ person: delegateTo }).eq('id', t.id);
+  if (error) { alert('Nepodařilo se předat úkol: ' + error.message); return; }
+  delegateId = null;
+  delegateTo = '';
+  await reload();
+}
+function delegateBoxHTML(t) {
+  const people = DEFAULT_PEOPLE.filter(p => p !== t.person);
+  return `
+    <div class="delegate-box">
+      <div class="delegate-label">Komu úkol předat?</div>
+      <div class="delegate-pick">
+        ${people.map(p => `<button class="chip ${delegateTo === p ? 'active' : ''}" data-delegate-to="${esc(p)}">${personIcon(p)} ${esc(p)}</button>`).join('')}
+      </div>
+      <div class="delegate-actions">
+        <button class="btn btn-ghost" data-delegate-cancel>Zrušit</button>
+        <button class="btn btn-primary" data-delegate-send ${delegateTo ? '' : 'disabled'}>Odeslat</button>
+      </div>
+    </div>`;
+}
+
 /* ---------- Vykreslení úkolu ---------- */
 function taskHTML(t) {
   const d = dayDiff(t.date);
@@ -649,16 +696,19 @@ function taskHTML(t) {
   if (t.person) meta.push(`<span class="tag tag-person">${personIcon(t.person)} ${esc(t.person)}</span>`);
   if (t.store) meta.push(`<span class="tag tag-store">🛒 ${esc(t.store)}</span>`);
   if (t.cat) meta.push(`<span class="tag tag-cat">${esc(t.cat)}</span>`);
+  const delegating = delegateId === t.id && canDelegate(t);
   return `
-    <div class="task ${t.important ? 'important' : ''} ${t.done ? 'done' : ''}">
+    <div class="task ${t.important ? 'important' : ''} ${t.done ? 'done' : ''} ${delegating ? 'delegating' : ''}">
       <div class="task-check ${t.done ? 'on' : ''}" data-done="${t.id}">${t.done ? '✓' : ''}</div>
       <div class="task-body">
         <div class="task-title">${t.secret ? '<span class="task-lock" title="Tajné – vidíš jen ty">🔒</span>' : ''}${t.important && !t.done ? '<span class="task-bang">❗</span>' : ''}${esc(t.title)}</div>
         ${meta.length ? `<div class="task-meta">${meta.join('')}</div>` : ''}
       </div>
+      ${canDelegate(t) ? `<button class="task-delegate ${delegating ? 'on' : ''}" data-delegate="${t.id}" title="Delegovat">👉</button>` : ''}
       <button class="task-edit" data-edit="${t.id}" title="Upravit">✏️</button>
       <button class="task-bang-btn ${t.important ? 'on' : ''}" data-imp="${t.id}" title="${t.important ? 'Zrušit vykřičník' : 'Přidat vykřičník'}">!</button>
       <button class="task-del" data-del="${t.id}" title="Smazat">×</button>
+      ${delegating ? delegateBoxHTML(t) : ''}
     </div>
   `;
 }
@@ -807,6 +857,18 @@ function render() {
     el.addEventListener('click', () => delTask(el.dataset.del)));
   main.querySelectorAll('[data-edit]').forEach(el =>
     el.addEventListener('click', () => { editId = el.dataset.edit; formOpen = true; renderForm(); window.scrollTo({ top: 0, behavior: 'smooth' }); }));
+  main.querySelectorAll('[data-delegate]').forEach(el =>
+    el.addEventListener('click', () => {
+      delegateId = delegateId === el.dataset.delegate ? null : el.dataset.delegate;
+      delegateTo = '';
+      render();
+    }));
+  main.querySelectorAll('[data-delegate-to]').forEach(el =>
+    el.addEventListener('click', () => { delegateTo = el.dataset.delegateTo; render(); }));
+  main.querySelectorAll('[data-delegate-cancel]').forEach(el =>
+    el.addEventListener('click', () => { delegateId = null; delegateTo = ''; render(); }));
+  main.querySelectorAll('[data-delegate-send]').forEach(el =>
+    el.addEventListener('click', () => { el.disabled = true; delegateTask(); }));
   main.querySelectorAll('[data-cat]').forEach(el =>
     el.addEventListener('click', () => { filterCat = el.dataset.cat; render(); }));
   main.querySelectorAll('[data-store]').forEach(el =>
