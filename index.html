@@ -694,14 +694,15 @@ async function delTask(id) {
   await reload();
 }
 
-// Delegovat jde jen vlastní, nehotový a netajný úkol (tajné úkoly nikdo jiný vidět nemá)
-function canDelegate(t) { return !!me && t.person === me && !t.done && !t.secret; }
+// Delegovat jde každý viditelný nehotový úkol (cizí i vlastní). Tajné úkoly ne: ty nikdo jiný vidět nemá.
+function canDelegate(t) { return !!me && !t.done && !t.secret; }
 async function delegateTask() {
   const t = state.tasks.find(x => x.id === delegateId);
   if (!t || !delegateTo || !canDelegate(t)) return;
-  const { error } = await sb.from('tasks').update({ person: delegateTo, delegated_by: me }).eq('id', t.id);
+  // kdo úkol předal: já, pokud ho dávám jinému. Když si úkol beru na sebe, předání se ruší.
+  const { error } = await sb.from('tasks').update({ person: delegateTo, delegated_by: delegateTo === me ? '' : me }).eq('id', t.id);
   if (error) { alert('Nepodařilo se předat úkol: ' + error.message); return; }
-  notifyDelegation(t.id);
+  if (delegateTo !== me) notifyDelegation(t.id);
   delegateId = null;
   delegateTo = '';
   await reload();
