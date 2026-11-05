@@ -4,6 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="theme-color" content="#1D9E75">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Úkolárna">
 <title>Myší úkolárna</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🐭</text></svg>">
 <link href="https://fonts.googleapis.com/css2?family=Fredoka+One&family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet">
@@ -340,6 +345,25 @@
   .me-chip { font-size: 14px; padding: 8px 16px; }
   .task-lock { margin-right: 4px; }
 
+  .push-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 9px 14px; margin-bottom: 1rem;
+    font-size: 13px; font-weight: 700; color: var(--text-muted);
+  }
+  .push-row.on { background: var(--teal-light); border-color: var(--teal); color: var(--teal-dark); }
+  .push-row .push-hint { font-weight: 600; font-size: 12px; line-height: 1.35; }
+  .push-btn {
+    background: var(--teal); color: #fff; border: none; cursor: pointer;
+    border-radius: var(--radius-pill); padding: 7px 14px; flex-shrink: 0;
+    font-family: 'Nunito', sans-serif; font-size: 13px; font-weight: 800;
+  }
+  .push-btn:disabled { opacity: .5; cursor: default; }
+  .push-off {
+    background: none; border: none; color: var(--teal-dark); text-decoration: underline;
+    cursor: pointer; font-size: 12px; font-weight: 700; font-family: 'Nunito', sans-serif; flex-shrink: 0;
+  }
+
   .task-delegate {
     background: none; border: none; cursor: pointer;
     font-size: 15px; padding: 0 2px;
@@ -366,6 +390,7 @@
   <p class="subtitle">Rodinné úkoly na jednom místě</p>
 
   <div id="meArea"></div>
+  <div id="pushArea"></div>
 
   <div class="mode-row" id="modeRow">
     <button class="modeBtn active" data-view="prehled">Přehled</button>
@@ -619,15 +644,20 @@ async function saveTask() {
   saveBtn.disabled = true; saveBtn.textContent = 'Ukládám…';
 
   let error;
+  let notifyId = null;
   if (editId) {
     const t = state.tasks.find(x => x.id === editId);
     const patch = { title, cat, date, person, store, important, secret, owner: secret ? ((t && t.owner) || me) : '' };
     // kdo úkol předal: mění se jen při změně osoby (jiná osoba než já = předáno mnou)
-    if (!t || t.person !== person) patch.delegated_by = (person && me && person !== me && !secret) ? me : '';
+    if (!t || t.person !== person) {
+      patch.delegated_by = (person && me && person !== me && !secret) ? me : '';
+      if (patch.delegated_by) notifyId = editId;
+    }
     ({ error } = await sb.from('tasks').update(patch).eq('id', editId));
   } else {
     const delegatedBy = (person && me && person !== me && !secret) ? me : '';
     const row = { id: uid(), title, cat, date, person, store, important, secret, owner: secret ? me : '', delegated_by: delegatedBy, done: false, created: Date.now() };
+    if (delegatedBy) notifyId = row.id;
     ({ error } = await sb.from('tasks').insert(row));
   }
   if (error) {
@@ -637,6 +667,7 @@ async function saveTask() {
     return;
   }
 
+  if (notifyId) notifyDelegation(notifyId);
   formOpen = false;
   editId = null;
   renderForm();
@@ -670,6 +701,7 @@ async function delegateTask() {
   if (!t || !delegateTo || !canDelegate(t)) return;
   const { error } = await sb.from('tasks').update({ person: delegateTo, delegated_by: me }).eq('id', t.id);
   if (error) { alert('Nepodařilo se předat úkol: ' + error.message); return; }
+  notifyDelegation(t.id);
   delegateId = null;
   delegateTo = '';
   await reload();
@@ -904,6 +936,94 @@ function render() {
   updateBadge();
 }
 
+/* ---------- Push notifikace ---------- */
+const VAPID_PUBLIC_KEY = 'BAbp3x9EdV5fwUe4VNmKXgYWMuYsn0kvAf5hM0qXEdSpxmlrKOWf_6-sbh5my9xQWHOhNCwr5sOyYtqIQTmPwxc';
+const PUSH_URL = SUPABASE_URL + '/functions/v1/push';
+const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const isStandalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+
+async function pushCall(body) {
+  const r = await fetch(PUSH_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', apikey: SUPABASE_KEY },
+    body: JSON.stringify(body)
+  });
+  return r.json();
+}
+function keyToBytes(b64) {
+  const pad = '='.repeat((4 - b64.length % 4) % 4);
+  const s = atob((b64 + pad).replace(/-/g, '+').replace(/_/g, '/'));
+  return Uint8Array.from(s, c => c.charCodeAt(0));
+}
+async function pushRegistration() {
+  if (!('serviceWorker' in navigator)) return null;
+  return navigator.serviceWorker.register('sw.js').then(() => navigator.serviceWorker.ready).catch(() => null);
+}
+async function computePushState() {
+  if (!me) return 'none';
+  const supported = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+  if (!supported) return isIOS && !isStandalone ? 'install' : 'unsupported';
+  if (Notification.permission === 'denied') return 'denied';
+  if (Notification.permission === 'granted') {
+    const reg = await pushRegistration();
+    const sub = reg && await reg.pushManager.getSubscription();
+    return sub ? 'on' : 'off';
+  }
+  return 'off';
+}
+async function renderPush() {
+  const area = document.getElementById('pushArea');
+  if (!area) return;
+  const st = await computePushState();
+  let html = '';
+  if (st === 'off') html = `<div class="push-row"><span>🔔 Upozornění na nové úkoly</span><button class="push-btn" data-push-on>Zapnout</button></div>`;
+  else if (st === 'on') html = `<div class="push-row on"><span>🔔 Upozornění zapnutá</span><button class="push-off" data-push-off>Vypnout</button></div>`;
+  else if (st === 'denied') html = `<div class="push-row"><span class="push-hint">🔕 Upozornění jsou zablokovaná. Povol je v nastavení telefonu nebo prohlížeče (Oznámení → Úkolárna).</span></div>`;
+  else if (st === 'install') html = `<div class="push-row"><span class="push-hint">🔔 Upozornění fungují jen v appce přidané na plochu: Sdílet → Přidat na plochu, a pak ji otevři z plochy.</span></div>`;
+  area.innerHTML = html;
+  const on = area.querySelector('[data-push-on]');
+  if (on) on.addEventListener('click', enablePush);
+  const off = area.querySelector('[data-push-off]');
+  if (off) off.addEventListener('click', disablePush);
+}
+async function enablePush(ev) {
+  ev.target.disabled = true;
+  ev.target.textContent = 'Zapínám…';
+  try {
+    const perm = await Notification.requestPermission();
+    if (perm !== 'granted') { await renderPush(); return; }
+    const reg = await pushRegistration();
+    if (!reg) throw new Error('Služba na pozadí se nespustila');
+    const sub = (await reg.pushManager.getSubscription()) ||
+      await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyToBytes(VAPID_PUBLIC_KEY) });
+    const j = sub.toJSON();
+    const res = await pushCall({ action: 'subscribe', person: me, subscription: { endpoint: j.endpoint, keys: j.keys } });
+    if (!res.ok) throw new Error(res.error || 'Uložení se nepodařilo');
+  } catch (e) {
+    alert('Upozornění se nepodařilo zapnout: ' + (e.message || e));
+  }
+  await renderPush();
+}
+async function disablePush() {
+  try {
+    const reg = await pushRegistration();
+    const sub = reg && await reg.pushManager.getSubscription();
+    if (sub) { const ep = sub.endpoint; await sub.unsubscribe(); await pushCall({ action: 'unsubscribe', endpoint: ep }); }
+  } catch (e) {}
+  await renderPush();
+}
+// Po změně myšky se zařízení přepíše na novou osobu
+async function repointPush() {
+  try {
+    if (!me || !('Notification' in window) || Notification.permission !== 'granted') return;
+    const reg = await pushRegistration();
+    const sub = reg && await reg.pushManager.getSubscription();
+    if (sub) { const j = sub.toJSON(); await pushCall({ action: 'subscribe', person: me, subscription: { endpoint: j.endpoint, keys: j.keys } }); }
+  } catch (e) {}
+}
+// Upozornění příjemci po předání úkolu (úkol je předaný i když upozornění selže)
+function notifyDelegation(taskId) { pushCall({ action: 'notify', task_id: taskId }).catch(() => {}); }
+
 /* ---------- Kdo jsem ---------- */
 function renderMe() {
   const area = document.getElementById('meArea');
@@ -930,6 +1050,7 @@ function renderMe() {
     me = '';
     localStorage.removeItem(ME_KEY);
     render();
+    renderPush();
   });
 }
 function setMe(name) {
@@ -938,6 +1059,7 @@ function setMe(name) {
   view = 'osoba';
   filterPerson = name;
   render();
+  repointPush().then(renderPush);
 }
 
 /* ---------- Ovládání ---------- */
@@ -958,6 +1080,7 @@ document.getElementById('addBtn').addEventListener('click', () => {
 
 async function init() {
   render();
+  renderPush();
   await migrateLocalIfNeeded();
   if (me) { view = 'osoba'; filterPerson = me; }
   await reload();
