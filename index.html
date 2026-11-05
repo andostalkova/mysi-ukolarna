@@ -818,7 +818,8 @@ function renderPrehled() {
 }
 
 function byDate(a, b) {
-  return (a.date || '9999').localeCompare(b.date || '9999');
+  // při stejném datu podle času vzniku (úkoly z Přehledu 42 se zakládají v pořadí Přehledu)
+  return (a.date || '9999').localeCompare(b.date || '9999') || (Number(a.created) || 0) - (Number(b.created) || 0);
 }
 function group(cls, title, tasks) {
   return `<div class="group-title ${cls}">${title}<span class="count">${tasks.length}</span></div>${listHTML(tasks)}`;
