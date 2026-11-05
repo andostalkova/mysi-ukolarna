@@ -372,6 +372,7 @@
     <button class="modeBtn" data-view="kategorie">Kategorie</button>
     <button class="modeBtn" data-view="osoba">Osoby</button>
     <button class="modeBtn" data-view="obchod">Obchody</button>
+    <button class="modeBtn" data-view="predane">Předané</button>
   </div>
 
   <button class="add-btn" id="addBtn">+ Nový úkol</button>
@@ -621,9 +622,12 @@ async function saveTask() {
   if (editId) {
     const t = state.tasks.find(x => x.id === editId);
     const patch = { title, cat, date, person, store, important, secret, owner: secret ? ((t && t.owner) || me) : '' };
+    // kdo úkol předal: mění se jen při změně osoby (jiná osoba než já = předáno mnou)
+    if (!t || t.person !== person) patch.delegated_by = (person && me && person !== me && !secret) ? me : '';
     ({ error } = await sb.from('tasks').update(patch).eq('id', editId));
   } else {
-    const row = { id: uid(), title, cat, date, person, store, important, secret, owner: secret ? me : '', done: false, created: Date.now() };
+    const delegatedBy = (person && me && person !== me && !secret) ? me : '';
+    const row = { id: uid(), title, cat, date, person, store, important, secret, owner: secret ? me : '', delegated_by: delegatedBy, done: false, created: Date.now() };
     ({ error } = await sb.from('tasks').insert(row));
   }
   if (error) {
@@ -664,7 +668,7 @@ function canDelegate(t) { return !!me && t.person === me && !t.done && !t.secret
 async function delegateTask() {
   const t = state.tasks.find(x => x.id === delegateId);
   if (!t || !delegateTo || !canDelegate(t)) return;
-  const { error } = await sb.from('tasks').update({ person: delegateTo }).eq('id', t.id);
+  const { error } = await sb.from('tasks').update({ person: delegateTo, delegated_by: me }).eq('id', t.id);
   if (error) { alert('Nepodařilo se předat úkol: ' + error.message); return; }
   delegateId = null;
   delegateTo = '';
@@ -837,14 +841,36 @@ function renderOsoba() {
   return html;
 }
 
+// Úkoly, které jsem předal(a) někomu jinému
+function delegatedByMe() {
+  return visibleTasks().filter(t => me && t.delegated_by === me && t.person && t.person !== me);
+}
+function renderPredane() {
+  if (!me) return emptyHTML('Nejdřív nahoře vyber, kdo jsi.');
+  const mine = applyDueDateFilter(delegatedByMe());
+  const active = mine.filter(t => !t.done).sort(byDate);
+  const done = mine.filter(t => t.done);
+  let html = `<p class="subtitle" style="margin-bottom:1rem">Úkoly, které jsi předal(a) ostatním. Po splnění se přesunou do „Splněno“.</p>`;
+  if (active.length) html += group('group-soon', '⏳ Čeká na splnění', active);
+  if (done.length) html += group('group-later', '✅ Splněno', done);
+  if (!active.length && !done.length) html += emptyHTML('Zatím jsi nikomu nic nepředal(a).<br>U svého úkolu klepni na 👉.');
+  return html;
+}
+
 function render() {
   renderMe();
   renderDateFilter();
   document.querySelectorAll('.modeBtn').forEach(b => b.classList.toggle('active', b.dataset.view === view));
+  const predBtn = document.querySelector('.modeBtn[data-view="predane"]');
+  if (predBtn) {
+    const open = delegatedByMe().filter(t => !t.done).length;
+    predBtn.textContent = open ? `Předané (${open})` : 'Předané';
+  }
   const main = document.getElementById('main');
   if (view === 'prehled') main.innerHTML = renderPrehled();
   else if (view === 'kategorie') main.innerHTML = renderKategorie();
   else if (view === 'osoba') main.innerHTML = renderOsoba();
+  else if (view === 'predane') main.innerHTML = renderPredane();
   else main.innerHTML = renderObchod();
 
   if (loadError) main.innerHTML = `<div class="empty"><div class="mouse">⚠️</div><p>Nepodařilo se spojit s cloudem.<br>${esc(loadError)}</p></div>` + main.innerHTML;
